@@ -1,0 +1,8 @@
+*
+!.gitignore
+!*.nix
+
+!Makefile
+
+!src/
+!*.ml

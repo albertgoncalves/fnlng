@@ -156,7 +156,7 @@ let rec show_expr_type n =
   | ExprTypeFunc (func, t) ->
     Printf.sprintf "(%s %s)" (show_func_type n func) (show_type t)
   | ExprTypeIdent (s, t) -> Printf.sprintf "(%s %s)" s (show_type t)
-  | ExprTypeInt n -> Printf.sprintf "(%d Int)" n
+  | ExprTypeInt n -> Printf.sprintf "(%d int)" n
 
 and show_stmt_type n =
   function
@@ -195,11 +195,9 @@ let rec find_captures_expr locals captures =
   | ExprAlloc exprs ->
     ExprAlloc (List.map (find_captures_expr locals captures) exprs)
   | ExprCall (func, args) ->
-    ExprCall
-      (
-        find_captures_expr locals captures func,
-        List.map (find_captures_expr locals captures) args
-      )
+    let func = find_captures_expr locals captures func in
+    let args = List.map (find_captures_expr locals captures) args in
+    ExprCall (func, args)
   | ExprDeref (expr, n) ->
     ExprDeref (find_captures_expr locals captures expr, n)
   | ExprFunc func ->
@@ -210,20 +208,22 @@ let rec find_captures_expr locals captures =
          List.iter
            (
              fun s ->
-               if not (Hashtbl.mem locals s) then
+               if not (Hashtbl.mem locals s) then (
                  Hashtbl.replace captures s ()
+               )
            )
            cs
        | _ -> assert false);
       ExprFunc func
     )
-  | (ExprIdent s) as expr when Hashtbl.mem locals s -> expr
-  | (ExprIdent s) as expr ->
+  | ExprIdent s as e when Hashtbl.mem locals s -> e
+  | ExprIdent s as e ->
     (
       Hashtbl.replace captures s ();
-      expr
+      e
     )
-  | (ExprInt n) as expr -> expr
+  | ExprBool _ as e -> e
+  | ExprInt _ as e -> e
 
 and find_captures_stmt locals captures =
   function
@@ -234,11 +234,9 @@ and find_captures_stmt locals captures =
       StmtLet (ident, value)
     )
   | StmtSet (target, value) ->
-    StmtSet
-      (
-        find_captures_expr locals captures target,
-        find_captures_expr locals captures value
-      )
+    let target = find_captures_expr locals captures target in
+    let value = find_captures_expr locals captures value in
+    StmtSet (target, value)
   | StmtVoid expr -> StmtVoid (find_captures_expr locals captures expr)
 
 and find_captures_func func =
@@ -350,14 +348,8 @@ let rec find_type_expr locals : expr -> expr_type =
      | t ->
        (
          let return_type = var () in
-         let func_type =
-           TypeFunc
-             (
-               List.map extract args,
-               Either.left (next_k ()),
-               return_type
-             ) in
-         bind (t, func_type);
+         let captures = Either.left (next_k ()) in
+         bind (t, TypeFunc (List.map extract args, captures, return_type));
          ExprTypeCall (func, args, return_type)
        ))
   | ExprDeref (expr, n) -> assert false
@@ -402,37 +394,38 @@ and find_type_func locals (func : func) : func_type =
   { args; captures; body; return }
 
 let rec resolve_type =
-  function
-  | TypeCaptures captures ->
-    TypeCaptures (List.map (fun (s, t) -> (s, resolve_type t)) captures)
-  | TypeFunc (args, captures, return) ->
-    TypeFunc
+  let visited = Hashtbl.create 8 in
+  let rec inner =
+    function
+    | TypeBool -> TypeBool
+    | TypeCaptures captures ->
+      TypeCaptures (List.map (fun (s, t) -> (s, inner t)) captures)
+    | TypeFunc (args, captures, return) ->
+      let args = List.map inner args in
+      let captures =
+        match inner (captures_to_type captures) with
+        | TypeCaptures captures -> Either.Right captures
+        | _ -> assert false in
+      TypeFunc (args, captures, inner return)
+    | TypeInt -> TypeInt
+    | TypeVar k ->
       (
-        List.map resolve_type args,
-        (match resolve_type (captures_to_type captures) with
-         | TypeCaptures captures -> Right captures
-         | _ -> assert false),
-        resolve_type return
-      )
-  | TypeInt -> TypeInt
-  | TypeVar k ->
-    (
-      let t0 = Hashtbl.find global.constraints k in
-      Hashtbl.remove global.constraints k;
-      let t1 = resolve_type t0 in
-      Hashtbl.add global.constraints k t1;
-      t1
-    )
+        assert (not (Hashtbl.mem visited k));
+        Hashtbl.add visited k ();
+        let t = inner (Hashtbl.find global.constraints k) in
+        Hashtbl.replace global.constraints k t;
+        Hashtbl.remove visited k;
+        t
+      ) in
+  inner
 
 let resolve_constraints () =
   Hashtbl.to_seq_keys global.constraints
   |> Seq.iter
     (
       fun k ->
-        Hashtbl.replace
-          global.constraints
-          k
-          (resolve_type (Hashtbl.find global.constraints k))
+        let t = resolve_type (Hashtbl.find global.constraints k) in
+        Hashtbl.replace global.constraints k t
     )
 
 let rec resolve_expr =
@@ -440,16 +433,11 @@ let rec resolve_expr =
   | ExprTypeAlloc (exprs, t) ->
     ExprTypeAlloc (List.map resolve_expr exprs, resolve_type t)
   | ExprTypeCall (func, args, t) ->
-    ExprTypeCall
-      (
-        resolve_expr func,
-        List.map resolve_expr args,
-        resolve_type t
-      )
+    let args = List.map resolve_expr args in
+    ExprTypeCall (resolve_expr func, args, resolve_type t)
   | ExprTypeDeref (expr, n, t) ->
     ExprTypeDeref (resolve_expr expr, n, resolve_type t)
-  | ExprTypeFunc (func, t) ->
-    ExprTypeFunc (resolve_func func, resolve_type t)
+  | ExprTypeFunc (func, t) -> ExprTypeFunc (resolve_func func, resolve_type t)
   | ExprTypeIdent (s, t) -> ExprTypeIdent (s, resolve_type t)
   | ExprTypeInt n -> ExprTypeInt n
 
@@ -461,12 +449,11 @@ and resolve_stmt =
   | StmtTypeVoid expr -> StmtTypeVoid (resolve_expr expr)
 
 and resolve_func func =
-  {
-    args = List.map (fun (s, t) -> (s, resolve_type t)) func.args;
-    captures = List.map (fun (s, t) -> (s, resolve_type t)) func.captures;
-    body = List.map resolve_stmt func.body;
-    return = resolve_expr func.return;
-  }
+  let args = List.map (fun (s, t) -> (s, resolve_type t)) func.args in
+  let captures = List.map (fun (s, t) -> (s, resolve_type t)) func.captures in
+  let body = List.map resolve_stmt func.body in
+  let return = resolve_expr func.return in
+  { args; captures; body; return }
 
 let rec rewrite_expr queue =
   function
@@ -476,7 +463,7 @@ let rec rewrite_expr queue =
     let func = rewrite_expr queue func in
     let args = List.map (rewrite_expr queue) args in
     (match extract func with
-     | TypeFunc (_, Right captures, _) as t ->
+     | TypeFunc (_, Right captures, _) ->
        if List.length captures <> 0 then (
          let ident =
            match func with
@@ -485,37 +472,59 @@ let rec rewrite_expr queue =
              (
                let ident = Printf.sprintf "__%d__" (next_k ()) in
                Queue.push (StmtTypeLet (ident, func)) queue;
-               ExprTypeIdent (ident, t)
+               ExprTypeIdent (ident, var ())
              ) in
-         let captures =
-           List.mapi
-             (fun i (_, t) -> ExprTypeDeref (ident, i + 1, t))
-             captures in
-         ExprTypeCall
-           (ExprTypeDeref (ident, 0, t), List.append args captures, t)
+         let env = ExprTypeDeref (ident, 1, TypeCaptures captures) in
+         ExprTypeCall (ExprTypeDeref (ident, 0, var ()), List.cons env args, t)
        ) else (
          ExprTypeCall (func, args, t)
        )
      | _ -> assert false)
-  | ExprTypeDeref (expr, n, t) ->
-    ExprTypeDeref (rewrite_expr queue expr, n, t)
-  | ExprTypeFunc (func, t) -> ExprTypeFunc (rewrite_func func, t)
+  | ExprTypeDeref (expr, n, t) -> ExprTypeDeref (rewrite_expr queue expr, n, t)
+  | ExprTypeFunc (func, t) ->
+    (
+      let func = rewrite_func func in
+      if List.length func.captures = 0 then (
+        ExprTypeFunc (func, t)
+      ) else (
+        let ident = Printf.sprintf "__%d__" (next_k ()) in
+        let captures =
+          List.map (fun (s, t) -> ExprTypeIdent (s, t)) func.captures in
+        let args =
+          [
+            (ExprTypeFunc (func, var ()));
+            (ExprTypeAlloc (captures, TypeCaptures func.captures));
+          ] in
+        let closure = ExprTypeAlloc (args, var ()) in
+        Queue.push (StmtTypeLet (ident, closure)) queue;
+        ExprTypeIdent (ident, t)
+      )
+    )
+  | ExprTypeBool _ as e -> e
   | ExprTypeIdent _ as e -> e
   | ExprTypeInt _ as e -> e
 
 and rewrite_stmt queue =
   function
-  | StmtTypeLet (ident, value) ->
-    StmtTypeLet (ident, rewrite_expr queue value)
+  | StmtTypeLet (ident, value) -> StmtTypeLet (ident, rewrite_expr queue value)
   | StmtTypeSet (target, value) ->
     StmtTypeSet (rewrite_expr queue target, rewrite_expr queue value)
   | StmtTypeVoid expr -> StmtTypeVoid (rewrite_expr queue expr)
 
 and rewrite_func func =
   let queue = Queue.create () in
+  if List.length func.captures <> 0 then (
+    List.iteri
+      (
+        fun i (s, t) ->
+          let deref = ExprTypeDeref (ExprTypeIdent ("env", var ()), i, t) in
+          Queue.push (StmtTypeLet (s, deref)) queue
+      )
+      func.captures
+  );
   List.iter (fun s -> Queue.push (rewrite_stmt queue s) queue) func.body;
   let return = rewrite_expr queue func.return in
-  { func with body = List.of_seq (Queue.to_seq queue); return = return }
+  { func with body = List.of_seq (Queue.to_seq queue); return }
 
 let () =
   let call func args =

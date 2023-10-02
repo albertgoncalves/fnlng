@@ -1,6 +1,7 @@
 open Prelude
 
 type typ =
+  | TypeBool
   | TypeCaptures of (string * typ) list
   | TypeFunc of typ list * (int, (string * typ) list) Either.t * typ
   | TypeInt
@@ -8,6 +9,7 @@ type typ =
 
 type expr =
   | ExprAlloc of expr list
+  | ExprBool of bool
   | ExprCall of expr * expr list
   | ExprDeref of expr * int
   | ExprFunc of func
@@ -28,6 +30,7 @@ and func = {
 
 type expr_type =
   | ExprTypeAlloc of expr_type list * typ
+  | ExprTypeBool of bool
   | ExprTypeCall of expr_type * expr_type list * typ
   | ExprTypeDeref of expr_type * int * typ
   | ExprTypeFunc of func_type * typ
@@ -66,6 +69,7 @@ let intrinsics =
 
 let rec show_type =
   function
+  | TypeBool -> "bool"
   | TypeCaptures captures ->
     List.map
       (fun (s, t) -> Printf.sprintf "%s: %s" s (show_type t))
@@ -98,6 +102,7 @@ let rec show_expr n =
     List.map (show_expr n) exprs
     |> String.concat ", "
     |> Printf.sprintf "[%s]"
+  | ExprBool b -> string_of_bool b
   | ExprCall (func, args) ->
     List.map (show_expr n) args
     |> String.concat ", "
@@ -145,6 +150,7 @@ let rec show_expr_type n =
       |> String.concat ", "
       |> Printf.sprintf "([%s] %s)"
     ) (show_type t)
+  | ExprTypeBool b -> Printf.sprintf "(%b bool)" b
   | ExprTypeCall (func, args, t) ->
     (
       List.map (show_expr_type n) args
@@ -261,6 +267,7 @@ and find_captures_func func =
 let extract =
   function
   | ExprTypeAlloc (_, t) -> t
+  | ExprTypeBool _ -> TypeBool
   | ExprTypeCall (_, _, t) -> t
   | ExprTypeDeref (_, _, t) -> t
   | ExprTypeFunc (_, t) -> t
@@ -270,6 +277,7 @@ let extract =
 let rec strip_expr =
   function
   | ExprTypeAlloc (exprs, _) -> ExprAlloc (List.map strip_expr exprs)
+  | ExprTypeBool b -> ExprBool b
   | ExprTypeCall (func, args, _) ->
     ExprCall (strip_expr func, List.map strip_expr args)
   | ExprTypeDeref (expr, n, _) -> ExprDeref (strip_expr expr, n)
@@ -330,6 +338,7 @@ let rec bind =
 let rec find_type_expr locals : expr -> expr_type =
   function
   | ExprAlloc _ -> assert false
+  | ExprBool b -> ExprTypeBool b
   | ExprCall (func, args) ->
     let func = find_type_expr locals func in
     let args = List.map (find_type_expr locals) args in
@@ -432,6 +441,7 @@ let rec resolve_expr =
   function
   | ExprTypeAlloc (exprs, t) ->
     ExprTypeAlloc (List.map resolve_expr exprs, resolve_type t)
+  | ExprTypeBool b -> ExprTypeBool b
   | ExprTypeCall (func, args, t) ->
     let args = List.map resolve_expr args in
     ExprTypeCall (resolve_expr func, args, resolve_type t)

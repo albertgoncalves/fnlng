@@ -468,6 +468,55 @@ and resolve_func func =
     return = resolve_expr func.return;
   }
 
+let rec rewrite_expr queue =
+  function
+  | ExprTypeAlloc (exprs, t) ->
+    ExprTypeAlloc (List.map (rewrite_expr queue) exprs, t)
+  | ExprTypeCall (func, args, t) ->
+    let func = rewrite_expr queue func in
+    let args = List.map (rewrite_expr queue) args in
+    (match extract func with
+     | TypeFunc (_, Right captures, _) as t ->
+       if List.length captures <> 0 then (
+         let ident =
+           match func with
+           | ExprTypeIdent _ -> func
+           | _ ->
+             (
+               let ident = Printf.sprintf "__%d__" (next_k ()) in
+               Queue.push (StmtTypeLet (ident, func)) queue;
+               ExprTypeIdent (ident, t)
+             ) in
+         let captures =
+           List.mapi
+             (fun i (_, t) -> ExprTypeDeref (ident, i + 1, t))
+             captures in
+         ExprTypeCall
+           (ExprTypeDeref (ident, 0, t), List.append args captures, t)
+       ) else (
+         ExprTypeCall (func, args, t)
+       )
+     | _ -> assert false)
+  | ExprTypeDeref (expr, n, t) ->
+    ExprTypeDeref (rewrite_expr queue expr, n, t)
+  | ExprTypeFunc (func, t) -> ExprTypeFunc (rewrite_func func, t)
+  | ExprTypeIdent _ as e -> e
+  | ExprTypeInt _ as e -> e
+
+and rewrite_stmt queue =
+  function
+  | StmtTypeLet (ident, value) ->
+    StmtTypeLet (ident, rewrite_expr queue value)
+  | StmtTypeSet (target, value) ->
+    StmtTypeSet (rewrite_expr queue target, rewrite_expr queue value)
+  | StmtTypeVoid expr -> StmtTypeVoid (rewrite_expr queue expr)
+
+and rewrite_func func =
+  let queue = Queue.create () in
+  List.iter (fun s -> Queue.push (rewrite_stmt queue s) queue) func.body;
+  let return = rewrite_expr queue func.return in
+  { func with body = List.of_seq (Queue.to_seq queue); return = return }
+
 let () =
   let call func args =
     ExprCall (func, args) in
@@ -538,5 +587,7 @@ let () =
 
   program
   |> resolve_func
-  |> show_func_type 0
+  |> rewrite_func
+  |> strip_func
+  |> show_func 0
   |> print_endline

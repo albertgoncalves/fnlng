@@ -577,6 +577,7 @@ let () =
     ExprIdent s in
   let int_0 = ExprInt 0 in
   let int_1 = ExprInt 1 in
+
   let funcs : func array = [|
     {
       args = ["n"];
@@ -630,7 +631,7 @@ let () =
   print_endline (show_func 0 program);
   print_newline ();
 
-  let program = find_type_func intrinsics program in
+  let program = find_type_func (Hashtbl.copy intrinsics) program in
 
   resolve_constraints ();
   Hashtbl.iter
@@ -643,4 +644,47 @@ let () =
   |> rewrite_func
   |> strip_func
   |> show_func 0
-  |> print_endline
+  |> print_endline;
+
+  let func0 : func =
+    {
+      args = [];
+      captures = None;
+      body = [];
+      return = ident "x";
+    } in
+  let func1 : func =
+    {
+      args = [];
+      captures = None;
+      body = [
+        StmtLet ("x", ExprCall (ident "f", []));
+        StmtSet (ExprDeref (ident "l", 0), ExprFunc func0);
+      ];
+      return = ident "x";
+    } in
+  let program : func =
+    {
+      args = ["f"];
+      captures = None;
+      body = [
+        StmtLet ("l", ExprAlloc [ExprUndef]);
+        StmtSet (ExprDeref (ident "l", 0), ExprFunc func1);
+      ];
+      return = ident "l";
+    } in
+
+  Hashtbl.clear global.constraints;
+  program
+  |> find_captures_func
+  |> find_type_func (Hashtbl.copy intrinsics)
+  |> strip_func
+  |> show_func 0
+  |> print_endline;
+  print_newline ();
+
+  resolve_constraints ();
+  Hashtbl.iter
+    (fun k v -> Printf.printf "%d: %s\n" k (show_type v))
+    global.constraints;
+  print_newline ()

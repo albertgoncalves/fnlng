@@ -1,6 +1,7 @@
 open Prelude
 
 type typ =
+  | TypeAlloc of typ list
   | TypeBool
   | TypeCaptures of (string * typ) list
   | TypeFunc of typ list * (int, (string * typ) list) Either.t * typ
@@ -15,6 +16,7 @@ type expr =
   | ExprFunc of func
   | ExprIdent of string
   | ExprInt of int
+  | ExprUndef
 
 and stmt =
   | StmtLet of string * expr
@@ -36,6 +38,7 @@ type expr_type =
   | ExprTypeFunc of func_type * typ
   | ExprTypeIdent of string * typ
   | ExprTypeInt of int
+  | ExprTypeUndef of typ
 
 and stmt_type =
   | StmtTypeLet of string * expr_type
@@ -69,6 +72,10 @@ let intrinsics =
 
 let rec show_type =
   function
+  | TypeAlloc types ->
+    List.map show_type types
+    |> String.concat ", "
+    |> Printf.sprintf "[%s]"
   | TypeBool -> "bool"
   | TypeCaptures captures ->
     List.map
@@ -85,7 +92,7 @@ let rec show_type =
           captures
         |> String.concat ", "
         |> Printf.sprintf "|%s|"
-      | Left k -> string_of_int k in
+      | Left k -> Printf.sprintf "#%d" k in
     Printf.sprintf "\\(%s) %s -> %s"
       (String.concat ", " (List.map show_type args))
       captures
@@ -111,6 +118,7 @@ let rec show_expr n =
   | ExprFunc func -> show_func n func
   | ExprIdent s -> s
   | ExprInt n -> string_of_int n
+  | ExprUndef -> "_"
 
 and show_stmt n =
   function
@@ -163,6 +171,7 @@ let rec show_expr_type n =
     Printf.sprintf "(%s %s)" (show_func_type n func) (show_type t)
   | ExprTypeIdent (s, t) -> Printf.sprintf "(%s %s)" s (show_type t)
   | ExprTypeInt n -> Printf.sprintf "(%d int)" n
+  | ExprTypeUndef t -> Printf.sprintf "(_ %s)" (show_type t)
 
 and show_stmt_type n =
   function
@@ -230,6 +239,7 @@ let rec find_captures_expr locals captures =
     )
   | ExprBool _ as e -> e
   | ExprInt _ as e -> e
+  | ExprUndef as e -> e
 
 and find_captures_stmt locals captures =
   function
@@ -273,6 +283,7 @@ let extract =
   | ExprTypeFunc (_, t) -> t
   | ExprTypeIdent (_, t) -> t
   | ExprTypeInt _ -> TypeInt
+  | ExprTypeUndef t -> t
 
 let rec strip_expr =
   function
@@ -284,6 +295,7 @@ let rec strip_expr =
   | ExprTypeFunc (func, _) -> ExprFunc (strip_func func)
   | ExprTypeIdent (s, _) -> ExprIdent s
   | ExprTypeInt n -> ExprInt n
+  | ExprTypeUndef _ -> ExprUndef
 
 and strip_stmt =
   function
@@ -315,6 +327,11 @@ let captures_to_type : (int, (string * typ) list) Either.t -> typ =
 
 let rec bind =
   function
+  | ((TypeCaptures _ as a), (TypeCaptures _ as b)) ->
+    (
+      Hashtbl.add global.constraints (next_k ()) a;
+      Hashtbl.add global.constraints (next_k ()) b
+    )
   | (TypeVar k, a) | (a, TypeVar k) ->
     (match Hashtbl.find_opt global.constraints k with
      | Some b ->
@@ -337,7 +354,9 @@ let rec bind =
 
 let rec find_type_expr locals : expr -> expr_type =
   function
-  | ExprAlloc _ -> assert false
+  | ExprAlloc exprs ->
+    let exprs = List.map (find_type_expr locals) exprs in
+    ExprTypeAlloc (exprs, TypeAlloc (List.map extract exprs))
   | ExprBool b -> ExprTypeBool b
   | ExprCall (func, args) ->
     let func = find_type_expr locals func in
@@ -361,7 +380,11 @@ let rec find_type_expr locals : expr -> expr_type =
          bind (t, TypeFunc (List.map extract args, captures, return_type));
          ExprTypeCall (func, args, return_type)
        ))
-  | ExprDeref (expr, n) -> assert false
+  | ExprDeref (expr, n) ->
+    let expr = find_type_expr locals expr in
+    (match extract expr with
+     | TypeAlloc types -> ExprTypeDeref (expr, n, List.nth types n)
+     | _ -> assert false)
   | ExprFunc func ->
     let func = find_type_func locals func in
     let args = List.map snd func.args in
@@ -369,6 +392,7 @@ let rec find_type_expr locals : expr -> expr_type =
     ExprTypeFunc (func, TypeFunc (args, captures, extract func.return))
   | ExprIdent s  -> ExprTypeIdent (s, Hashtbl.find locals s)
   | ExprInt n -> ExprTypeInt n
+  | ExprUndef -> ExprTypeUndef (var ())
 
 and find_type_stmt locals : stmt -> stmt_type =
   function
@@ -406,6 +430,7 @@ let rec resolve_type =
   let visited = Hashtbl.create 8 in
   let rec inner =
     function
+    | TypeAlloc types -> TypeAlloc (List.map inner types)
     | TypeBool -> TypeBool
     | TypeCaptures captures ->
       TypeCaptures (List.map (fun (s, t) -> (s, inner t)) captures)
@@ -414,17 +439,24 @@ let rec resolve_type =
       let captures =
         match inner (captures_to_type captures) with
         | TypeCaptures captures -> Either.Right captures
+        | TypeVar k -> Either.Left k
         | _ -> assert false in
       TypeFunc (args, captures, inner return)
     | TypeInt -> TypeInt
     | TypeVar k ->
       (
-        assert (not (Hashtbl.mem visited k));
-        Hashtbl.add visited k ();
-        let t = inner (Hashtbl.find global.constraints k) in
-        Hashtbl.replace global.constraints k t;
-        Hashtbl.remove visited k;
-        t
+        if Hashtbl.mem visited k then (
+          TypeVar k
+        ) else (
+          Hashtbl.add visited k ();
+          let t =
+            match Hashtbl.find_opt global.constraints k with
+            | Some t -> inner t
+            | None -> TypeVar k in
+          Hashtbl.replace global.constraints k t;
+          Hashtbl.remove visited k;
+          t
+        )
       ) in
   inner
 
@@ -449,7 +481,8 @@ let rec resolve_expr =
     ExprTypeDeref (resolve_expr expr, n, resolve_type t)
   | ExprTypeFunc (func, t) -> ExprTypeFunc (resolve_func func, resolve_type t)
   | ExprTypeIdent (s, t) -> ExprTypeIdent (s, resolve_type t)
-  | ExprTypeInt n -> ExprTypeInt n
+  | ExprTypeInt _ as e -> e
+  | ExprTypeUndef t -> ExprTypeUndef (resolve_type t)
 
 and resolve_stmt =
   function
@@ -513,6 +546,7 @@ let rec rewrite_expr queue =
   | ExprTypeBool _ as e -> e
   | ExprTypeIdent _ as e -> e
   | ExprTypeInt _ as e -> e
+  | ExprTypeUndef _ as e -> e
 
 and rewrite_stmt queue =
   function

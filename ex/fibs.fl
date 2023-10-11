@@ -1,0 +1,54 @@
+lazy(f) {
+    l := [](1);
+    l[0] = \() {
+        x := f();
+        l[0] = \() {
+            x
+        };
+        x
+    };
+    l
+}
+
+force(l) {
+    l[0]()
+}
+
+list(x, f) {
+    l := [](2);
+    l[0] = x;
+    l[1] = lazy(f);
+    l
+}
+
+head(l) {
+    l[0]
+}
+
+tail(l) {
+    force(l[1])
+}
+
+zip_with(f, a, b) {
+    list(f(head(a), head(b)), \() {
+        zip_with(f, tail(a), tail(b))
+    })
+}
+
+drop(n, l) {
+    if ==(n, 0) {
+        l
+    } else {
+        drop(-(n, 1), tail(l))
+    }
+}
+
+main() {
+    fibs := list(0, _);
+    fibs[1] = \() {
+        list(1, \() {
+            zip_with(+, fibs, tail(fibs))
+        })
+    };
+    print(head(drop(50, fibs)))
+}

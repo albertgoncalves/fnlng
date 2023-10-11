@@ -5,4 +5,10 @@
 !Makefile
 
 !src/
-!*.ml
+!*.hs
+
+!ex/
+!*.fl
+
+!vim/
+!*.vim

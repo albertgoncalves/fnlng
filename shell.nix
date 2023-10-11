@@ -1,8 +1,10 @@
 with import <nixpkgs> {};
 mkShell {
     buildInputs = [
-        ocaml
-        ocamlPackages.ocp-indent
+        ghc
+        hlint
+        mold
+        ormolu
     ];
     shellHook = ''
     '';

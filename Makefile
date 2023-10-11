@@ -1,14 +1,28 @@
 MAKEFLAGS += --silent
 FLAGS = \
-	-g \
-	-nolabels \
-	-strict-formats \
-	-strict-sequence \
-	-unboxed-types \
-	-warn-error "+a"
-SOURCE = \
-	prelude.ml \
-	main.ml
+	-fprof-auto \
+	-fprof-cafs \
+	-prof \
+	-fdiagnostics-color=always \
+	-isrc \
+	-outputdir build \
+	-Wall \
+	-Wcompat \
+	-Werror \
+	-Widentities \
+	-Wincomplete-record-updates \
+	-Wincomplete-uni-patterns \
+	-Wmonomorphism-restriction \
+	-Wpartial-fields \
+	-Wredundant-constraints \
+	-Wunused-packages \
+	-Wunused-type-patterns
+MODULES = \
+	Ast \
+	Escape \
+	Main \
+	Parse
+LINTS = $(foreach x,$(MODULES),build/$(x).lint)
 
 .PHONY: all
 all: bin/main
@@ -19,12 +33,15 @@ clean:
 	rm -rf build/
 
 .PHONY: run
-run: bin/main
-	bin/main
+run: all
+	./bin/main +RTS -xc -RTS < ex/counter.fl
 
-bin/main: src/*.ml
-	mkdir -p bin/
+$(LINTS): build/%.lint: src/%.hs
 	mkdir -p build/
-	ocp-indent -i src/*.ml
-	cp src/*.ml build/
-	cd build/; ocamlc $(FLAGS) -o ../bin/main $(SOURCE)
+	hlint $^
+	ormolu -i --no-cabal $^
+	touch $@
+
+bin/main: $(LINTS)
+	mkdir -p bin/
+	ghc $(FLAGS) -o bin/main src/Main.hs

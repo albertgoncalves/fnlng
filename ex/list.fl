@@ -1,0 +1,16 @@
+List(a) : Nil | Cons(a, List(a))
+
+main() {
+    l := Cons(0, Cons(1, Nil));
+    loop := \(l) {
+        match l
+        : Nil {
+            0
+        }
+        | Cons(x, xs) {
+            print(x);
+            loop(xs)
+        }
+    };
+    loop(l)
+}

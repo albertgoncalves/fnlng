@@ -6,7 +6,6 @@ import Ast (Expr (..), Func (..), Scope (..), Stmt (..))
 import Data.Char (isAlpha, isDigit, isSpace)
 import Text.ParserCombinators.ReadP
   ( ReadP,
-    chainl1,
     char,
     eof,
     get,
@@ -62,28 +61,16 @@ unsignedInt = read <$> token (munch1 isDigit)
 signedInt :: ReadP Int
 signedInt = read <$> ((:) <$> tokenChar '-' <*> munch1 isDigit)
 
+exprCallArgs :: ReadP (Either Int [Expr])
+exprCallArgs =
+  (Right <$> (tokenChar '(' *> (expr `sepBy` tokenChar ',') <* tokenChar ')'))
+    <++ (Left <$> (tokenChar '[' *> unsignedInt <* tokenChar ']'))
+
 exprCall :: ReadP Expr
 exprCall =
-  foldl
-    ( \exprLeft -> \case
-        Left offset -> ExprAccess exprLeft offset
-        Right exprs -> ExprCall exprLeft exprs
-    )
+  foldl (flip $ either (flip ExprAccess) (flip ExprCall))
     <$> exprAtom
-    <*> ((: []) <$> exprCallArgs) `chainl1` pure (++)
-  where
-    exprCallArgs :: ReadP (Either Int [Expr])
-    exprCallArgs =
-      choice
-        [ tokenChar '(' *> exprCallParen <* tokenChar ')',
-          tokenChar '[' *> exprCallBrace <* tokenChar ']'
-        ]
-
-    exprCallBrace :: ReadP (Either Int [Expr])
-    exprCallBrace = Left <$> unsignedInt
-
-    exprCallParen :: ReadP (Either Int [Expr])
-    exprCallParen = Right <$> (expr `sepBy` tokenChar ',')
+    <*> many1 exprCallArgs
 
 exprIfElse :: ReadP Expr
 exprIfElse =

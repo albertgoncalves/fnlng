@@ -113,6 +113,7 @@ func =
   Func
     <$> (tokenChar '(' *> (ident `sepBy` tokenChar ',') <* tokenChar ')')
     <*> pure Nothing
+    <*> pure Nothing
     <*> scope
 
 parse :: String -> [(String, Func)]

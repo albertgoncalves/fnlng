@@ -20,7 +20,7 @@ data Stmt
 
 data Scope = Scope [Stmt] Expr
 
-data Func = Func [String] (Maybe [String]) Scope
+data Func = Func [String] (Maybe [String]) (Maybe [String]) Scope
 
 instance Show Expr where
   show = showExpr 0
@@ -60,12 +60,16 @@ showStmt n (StmtSet target value) =
 showStmt n (StmtVoid expr) = showExpr n expr
 
 showFunc :: Int -> Func -> String
-showFunc n (Func args maybeCaptures scope) =
+showFunc n (Func args maybeCaptures maybeBoxed scope) =
   printf
-    "(%s)%s %s"
+    "(%s)%s%s %s"
     (intercalate ", " args)
     ( case maybeCaptures of
         Just captures -> printf " |%s|" $ intercalate ", " captures
+        Nothing -> ""
+    )
+    ( case maybeBoxed of
+        Just boxed -> printf " [%s]" $ intercalate ", " boxed
         Nothing -> ""
     )
     $ showScope n scope

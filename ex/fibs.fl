@@ -44,11 +44,11 @@ drop(n, l) {
 }
 
 main() {
-    fibs := list(0, _);
-    fibs[1] = \() {
+    fibs := _;
+    fibs =  list(0, \() {
         list(1, \() {
             zip_with(+, fibs, tail(fibs))
         })
-    };
+    });
     print(head(drop(50, fibs)))
 }
